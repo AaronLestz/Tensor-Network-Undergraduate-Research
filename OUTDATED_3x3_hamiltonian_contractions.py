@@ -1,12 +1,14 @@
 import copy
 import numpy as np
-import wavefunction_generator
+from wavefunction_generator import generate_all_spin_up_network
+from model_adapter import adapt_gmpos_to_hamiltonian_net
 from gmpos.models.heis_zz.ham import get_gmpos_zz
 
 def generate_tensor_networks(bond_dim=2, phys_dim=2):
     """
     Generates the psi, H, and psi* tensors for a 3x3 grid.
     """
+
     psi_net, psi_conj_net, H_net = [], [], []
 
     for _ in range(9):
@@ -26,9 +28,6 @@ def generate_tensor_networks(bond_dim=2, phys_dim=2):
     return psi_net, H_net, psi_conj_net
 
 def contract_triple_layer(t_psi, t_H, t_psi_star):
-    """
-    Contracts 3 nodes into 1, for conversion from 3D to 2D tensor network
-    """
     res = np.einsum('abcdn, efghmn, ABCDm -> aAebBfcCgdDh', 
                     t_psi, t_H, t_psi_star, optimize=True)
     s = res.shape
@@ -49,96 +48,35 @@ def reshape_edge_tensors(H_tensor, L=False, U=False, R=False, D=False):
         H_tensor = H_tensor[:, :, :, :1, :, :]
     return H_tensor
 
-
-# FIXED CODE (and interactions with the library code) HERE
-
-def hamiltonian_bottom_contraction(psi_net, bot_dict, vert_dict, gmpo_dict, psi_star_net):
-    """
-    CONTRACTION 1: Purely horizontal MPO interactions on Row 0 (bottom row).
-    Nodes 0, 1, 2 host the MPO; all other nodes are untouched.
-    """
+def contract_1x3_hamiltonian(psi_net, H_net, psi_star_net):
     fused, p_dim = [], psi_net[0].shape[-1]
-    bot_mpo = bot_dict['zz']
-    
     for i in range(9):
-        if(i in [0, 1, 2]):  # Bottom row (0)
-            H_bot = bot_mpo[i].copy()
-            # H_bot shape (I believe): (left, 1, right, p_out, p_in)
-            # Insert D dimension to match form
-            H = H_bot[:, :, :, None, :, :]
-            H = reshape_edge_tensors(H, L=(i in [1, 2]), U=False, R=(i in [0, 1]), D=False)
-        else:  # Other rows 
+        if(i in [0, 3, 6]):
+            H = reshape_edge_tensors(H_net[i], U=(i in [0, 3]), D=(i in [3, 6]))
+        else:
             H = get_identity_H(p_dim)
-            
         fused.append(contract_triple_layer(psi_net[i], H, psi_star_net[i]))
     return fused
 
-def hamiltonian_middle_contraction(psi_net, bot_dict, vert_dict, gmpo_dict, psi_star_net):
-    """
-    CONTRACTION 2: Horizontal MPO on Row 1 combined with Vertical MPO links from Row 0 to Row 1.
-    - Row 0 hosts the lower parts of the vertical MPO links.
-    - Row 1 hosts the bulk horizontal MPO terms & vert connections.
-    - Row 2 is completely untouched.
-    """
+def contract_2x3_hamiltonian(psi_net, H_net, psi_star_net):
     fused, p_dim = [], psi_net[0].shape[-1]
-    
     for i in range(9):
-        if(i in [0, 1, 2]):  # Row 0: Vertical MPO connection pointing UP
-            x = i
-            H_vert = vert_dict[(x, 'zz')][0].copy()  # shape: (up, down=1, p_out, p_in)
-            # Map to PEPO: L=1, U=up, R=1, D=down
-            H = H_vert[None, :, None, :, :, :]
-            H = reshape_edge_tensors(H, L=False, U=True, R=False, D=False)
-            
-        elif(i in [3, 4, 5]):  # Row 1: Horizontal (bulk) MPO connecting to open D links
-            x = i - 3
-            H_hor = gmpo_dict[(1, 'zz')][x].copy()  # shape: (left, down, right, p_out, p_in)
-            # Map to PEPO: L=left, U=1, R=right, D=down
-            H = H_hor[:, None, :, :, :]  # (left, 1, down, right, p_out, p_in)
-            H = H.transpose(0, 1, 3, 2, 4, 5)  # (left, 1, right, down, p_out, p_in)
-            H = reshape_edge_tensors(H, L=(x in [1, 2]), U=False, R=(x in [0, 1]), D=True)
-            
-        else:  # Untouched top row
+        if(i in [0, 3, 6]): 
+            H = reshape_edge_tensors(H_net[i], R=True)
+        elif(i in [1, 4, 7]): 
+            H = reshape_edge_tensors(H_net[i], L=True, U=(i in [1, 4]), D=(i in [4, 7]))
+        else:
             H = get_identity_H(p_dim)
-            
         fused.append(contract_triple_layer(psi_net[i], H, psi_star_net[i]))
     return fused
 
-def hamiltonian_top_contraction(psi_net, bot_dict, vert_dict, gmpo_dict, psi_star_net):
-    """
-    CONTRACTION 3: Horizontal MPO on Row 2 combined with Vertical MPO links from Row 1 to Row 2.
-    - Row 0 is completely untouched.
-    - Row 1 hosts the lower parts of the vertical MPO links.
-    - Row 2 hosts the bulk horizontal MPO terms & vert connections.
-    """
+def contract_3x3_hamiltonian(psi_net, H_net, psi_star_net):
     fused, p_dim = [], psi_net[0].shape[-1]
-    
     for i in range(9):
-        if(i in [0, 1, 2]):  # Untouched bottom row
-            H = get_identity_H(p_dim)
-            
-        elif(i in [3, 4, 5]):  # Row 1: Vertical MPO link pointing UP to Row 2
-            x = i - 3
-            H_vert = vert_dict[(x, 'zz')][1].copy()  # shape: (up, down, p_out, p_in)
-            # Slice down leg to 0 since no interaction with Row 0
-            H_vert_sliced = H_vert[:, :1, :, :]
-            # Map to PEPO: L=1, U=up, R=1, D=1
-            H = H_vert_sliced[None, :, None, :, :, :]
-            H = reshape_edge_tensors(H, L=False, U=True, R=False, D=False)
-            
-        else:  # Row 2: Horizontal (bulk) MPO connecting to open D links
-            x = i - 6
-            H_hor = gmpo_dict[(2, 'zz')][x].copy()  # shape: (left, down, right, p_out, p_in)
-            # Map to PEPO: L=left, U=1, R=right, D=down
-            H = H_hor[:, None, :, :, :]
-            H = H.transpose(0, 1, 3, 2, 4, 5)
-            H = reshape_edge_tensors(H, L=(x in [1, 2]), U=False, R=(x in [0, 1]), D=True)
-            
+        H = reshape_edge_tensors(H_net[i], L=(i in [1, 2, 4, 5, 7, 8]), 
+                                 R=(i in [0, 1, 3, 4, 6, 7]), U=(i in [2, 5]), D=(i in [5, 8]))
         fused.append(contract_triple_layer(psi_net[i], H, psi_star_net[i]))
     return fused
-
-
-# 2D CONTRACTION CODE (with adapter)
 
 def adapt_to_2d_contraction(fused_net):
     """
@@ -160,23 +98,34 @@ def adapt_to_2d_contraction(fused_net):
 
     return adapted
 
+
 def generate_left_canonical_form(mps: list[np.ndarray]):
-    for i in range(len(mps) - 1): 
+    """
+    In place algorithm to generate left canonical form
+    of the given matrix product states
+    """
+    for i in range(len(mps) - 1): # Leave last column
         tensor = mps[i]
         l, p, r = tensor.shape
         tensor = tensor.reshape(l * p, r)
+
         U, S, Vdag = np.linalg.svd(tensor, full_matrices=False)
         U = U.reshape(l, p, S.shape[0])
         S_Vdag = np.matmul(np.diag(S), Vdag)
         mps[i] = U
         mps[i + 1] = np.einsum("le, eur -> lur", S_Vdag, mps[i + 1])
 
-def mps_svd_contraction(mps: list[np.ndarray], dim: int = -1, lose_dim: int = -1, comp_percent: float = 1):
-    generate_left_canonical_form(mps) 
+def mps_svd_contraction(mps: list[np.ndarray], dim: int = -1,
+                            lose_dim: int = -1, comp_percent: float = 1):
+    """
+    In place algorithm to compress a given matrix product state (mps)
+    """
+    generate_left_canonical_form(mps) # In place
     for i in reversed(range(1, len(mps))):
         tensor = mps[i]
         l, p, r = tensor.shape
         tensor = tensor.reshape(l, p * r)
+
         U, S, Vdag = np.linalg.svd(tensor, full_matrices=False)
         if(dim != -1):
             curr_dim = min(len(S), dim)
@@ -193,22 +142,27 @@ def mps_svd_contraction(mps: list[np.ndarray], dim: int = -1, lose_dim: int = -1
             U = U[:, :curr_dim]
             S = S[:curr_dim]
             Vdag = Vdag[:curr_dim, :]
+
         Vdag = Vdag.reshape(S.shape[0], p, r)
         U_S = np.matmul(U, np.diag(S))
         mps[i] = Vdag
         mps[i - 1] = np.einsum("lue, er -> lur", mps[i - 1], U_S)
 
 def compute_mps_error(exact_mps: list[np.ndarray], compressed_mps: list[np.ndarray]) -> float:
+    """Calculates L^2 Error between exact & compressed mps"""
     def mps_inner_product(mps1, mps2):
         E = np.einsum("lpr, lpR -> rR", mps1[0].conj(), mps2[0])
         for i in range(1, len(mps1)):
             E = np.einsum("lL, lpr, LpR -> rR", E, mps1[i].conj(), mps2[i])
         return np.squeeze(E)
+
     norm_exact = mps_inner_product(exact_mps, exact_mps)
     norm_compressed = mps_inner_product(compressed_mps, compressed_mps)
     overlap = mps_inner_product(exact_mps, compressed_mps)
+
     err_sq = norm_exact + norm_compressed - 2 * np.real(overlap)
     err_sq = max(err_sq, 0.0)
+
     return float(np.sqrt(err_sq))
 
 def contract_n_by_n_network(tensor_list: list[np.ndarray], n: int, compress: bool = False,
@@ -228,7 +182,7 @@ def contract_n_by_n_network(tensor_list: list[np.ndarray], n: int, compress: boo
                 if(order == 2):
                     if(index == 0):
                         return tensor.reshape(1, shape[0], shape[1])
-                    else:
+                    else: 
                         return tensor.reshape(shape[0], shape[1], 1)
                 else: return tensor
                 
@@ -283,23 +237,17 @@ def contract_n_by_n_network(tensor_list: list[np.ndarray], n: int, compress: boo
     relative_error = total_error / final_contracted_value if final_contracted_value != 0 else 0
     return final_contracted_value, total_error, relative_error
 
-
 def create_and_contract():
-    """
-    Function to be called in main. Could likely be adjusted to be slightly general, for
-      example to which spin network. But for now, manually changing each time is sufficient.
-    """
-    psi, psi_star = wavefunction_generator.generate_striped_spin_network()
+    # psi, H, psi_star = generate_tensor_networks()
+    psi, psi_star = generate_all_spin_up_network()
 
-    # No separate adapter like before, because difference in information required
-    # changes to this contraction algorithm (couldn't just black-box it).
     bot_dict, vert_dict, gmpo_dict = get_gmpos_zz(3, 3)
-    print("Bottom dictionary test shape:", bot_dict['zz'][0].shape)
+    print(bot_dict['zz'][0].shape)
+    H = adapt_gmpos_to_hamiltonian_net(bot_dict, vert_dict, gmpo_dict, 3, 3)
 
-    # Just have it take each of them in because it looks nice :) (easier to copy-paste)
-    raw_H1 = hamiltonian_bottom_contraction(psi, bot_dict, vert_dict, gmpo_dict, psi_star)
-    raw_H2 = hamiltonian_middle_contraction(psi, bot_dict, vert_dict, gmpo_dict, psi_star)
-    raw_H3 = hamiltonian_top_contraction(psi, bot_dict, vert_dict, gmpo_dict, psi_star)
+    raw_H1 = contract_1x3_hamiltonian(psi, H, psi_star)
+    raw_H2 = contract_2x3_hamiltonian(psi, H, psi_star)
+    raw_H3 = contract_3x3_hamiltonian(psi, H, psi_star)
 
     tn_H1 = adapt_to_2d_contraction(raw_H1)
     tn_H2 = adapt_to_2d_contraction(raw_H2)
