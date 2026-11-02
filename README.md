@@ -1,10 +1,23 @@
 # Tensor-Network-Undergraduate-Research
-Repository containing my work for undergraduate research with professor Coley-O'Rourke
+Repository containing subset of early work for undergraduate research, with guidance for projects to complete being provided by Professor Coley-O'Rourke.
 
-CURRENT: Don't have a provided task, but will try to generalize the 3 x 3 to n x n, as this is a reasonable step to also check if I need to change at all the setup around compressions. First thoughts is no, but regardless, it could also find some unexpected edge case.
+Last update to any of the code: August 2026
 
-FINISHED TASK: Get a working Hamiltonian contraction with Hamiltonian TN's as provided from the professor's code. Relevant committed files are:
+MOST RECENT FINISHED TASK: Get a working Hamiltonian contraction with Hamiltonian TN's as provided from the professor's code. Relevant committed files are:
 - 3x3_hamiltonian_contractions.py
 - wavefunction_generator.py (testing)
 
-Other files meanings are mostly clear from their names. Only unclear one is the model_adapter.py, which is no longer in use, and was from the failed attempt at maintaining more of the framework seen in OUTDATED_3x3_hamiltonian_contractions.py. This failed due to being inherently incompatible (not enough/the right information) with the professor's code.
+Along with the tools required for exact 2-D and 3-D tensor network contraction - Linear
+Algebra, NumPy, and Algorithms - the contractions in this repository also implement:
+Compression, Canonical Forms of Matrix Product States, Error Calculation, and
+Normalization & Log Scaling of results
+
+With the exception of OUTDATED_3x3_hamiltonian_contractions.py, all tensor network
+contraction algorithms in this repository are correctly implemented. Additionally, 
+with the exception of 3x3_hamiltonian_contractions.py (and its outdated version), all contraction files work by themselves - i.e., they do not require being in the same directory any other file.
+
+Both of the hamiltonian contraction algorithms rely on files provided to me by the
+professor, which are *not* contained within the repository, and so they will not be
+able to run with only the code in the repository. However, understanding of most of each
+algorithm's code does not rely on said files, and thus behavior of each algorithm should
+still be largely evident from this repository alone. 
